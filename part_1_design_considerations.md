@@ -48,6 +48,7 @@ The function implementation always requires context, there's a wrapper for when 
 <!--
  - creating a context with a 1 minute deadline from a parent of a 5 minute deadline yields a 1 minute deadline
  - creating a context with a 5 minute deadline from a parent of a 1 minute deadline yields a 1 minute deadline
+ 	- this is done during creation by a branch in the library
  - WithTimeout and WithDeadline both resolve to a deadline, which is a defined point in time, not a duration of time.
  	- TODO: why is that important to know?
  - also returns a cancel function
@@ -65,6 +66,11 @@ The function implementation always requires context, there's a wrapper for when 
 ```golang
 ctx := context.WithValue(context.Background(), TODO, time.Now())
 ```
+<!-- 
+ - a parent context's value is never overwritten for a given key, it's shadowed
+ 	- as frames of context fall off the stack, it will become accessible again
+ - keys should be unexported structs: this guarantees no collisions
+ -->
 
 ---
 <!-- fg=black bg=red -->
@@ -73,7 +79,9 @@ ctx := context.WithValue(context.Background(), TODO, time.Now())
 valueCtx is effectively a `map[interface{}]interface{}`.
 Storing any required data in the context amounts to subverting the type system: you lose any guarantee that your data exists.
 valueCtx is meant for systems that can tolerate failures, such as metrics or arguably logging.
-
+<!-- 
+ - at its extreme, what's the point in having _any_ variable in the signature if you can have _all_ of them in a single parameter?
+ -->
 ---
 ## Key point: Contexts are composed
 
