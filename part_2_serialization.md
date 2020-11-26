@@ -21,16 +21,12 @@ Luckily, the Go standard library includes an encoding package, which handles mos
 
 ---
 ## Practice
-<!-- TODO: inline code doesn't work in a list -->
 Remember, `context.Context` is an interface that has 4 implementations in the standard library
-- deadline (timeout contexts are a wrapper over deadline)
-	- contains a parent context, time, and cancel func
-- cancel
-	- contains a parent context and cancel func
-- value
-	- contains a parent context, key interface, and value interface
-- empty
-	- ...
+- `deadline` contains a parent context, time, and cancel func
+	- (`timeout` contexts are a wrapper over deadline)
+- `cancel` contains a parent context and cancel func
+- `value` contains a parent context, key interface, and value interface
+- `empty`
 
 ---
 ## Serialization Woes
@@ -48,19 +44,22 @@ Remember, `context.Context` is an interface that has 4 implementations in the st
 
 ---
 ## Implementation
-<!-- TODO: numbered lists don't work -->
-<!-- TODO: 
-	- the following statement is misleading and unnecessary:
-	If we already have a deadline (remember, context is composed), choose the earliest of the existing and current -->
  1. Receive an incoming context: use reflection to determine the concrete type
- 2. If the type is cancelCtx, remember that we’ll have to create a cancellation function during deserialization
- 3. If the context is timerCtx, reach in and grab the deadline time.
- 4. If we already have a deadline (remember, context is composed), choose the earliest of the existing and current
- 5. Remember the deadline for deserialization
- 6. If the context has a parent context, use it to recurse upwards in the context stack
- 7. Create our own struct to house the deadline time and cancellation func. This is what actually gets serialized.
- 8. Serialize this struct across the wire, and receive it on the other side
- 9. At deserialization, we know we need to create a timerCtx and cancellation function, so we create them
+ 1. If the type is cancelCtx, remember that we’ll have to create a cancellation function during deserialization
+ 1. If the context is timerCtx, reach in and grab the deadline time.
+ 	1. when creating a timerCtx, the earliest deadline is always chosen. No need to compare deadlines
+ 1. Remember the deadline for deserialization
+ 1. If the type is valueCtx:
+ 	1. reach in and grab the key/value `interface`s. Use `gob` to register them, and add them to `map[interface]interface`
+ 	1. do not overwrite any existing keys
+ 1. If the context has a parent context, use it to recurse upwards in the context stack
+ 1. Create our own struct to house the deadline time, cancellation func, and value map. This is what actually gets serialized.
+ 1. Serialize this struct across the wire using `gob`, and receive it on the other side
+ 1. At deserialization, we know we need to create a timerCtx and cancellation function, so we create them
+
+<!-- 
+ - gob can serialize things it has the concrete implementations for (e.g. unexported keys with a primitive type)
+  -->
 
 ---
 ## Notes
@@ -69,4 +68,45 @@ Remember, `context.Context` is an interface that has 4 implementations in the st
  - Context is flattened during serialization, nothing pre-serialization can be popped off post-serialization
 
 ---
+```go
+func buildMap(ctx context.Context, s contextData) contextData {
+    rs := reflect.ValueOf(ctx).Elem()
+    if rs.Type() == reflect.ValueOf(context.Background()).Elem().Type() {
+        return s  // base case: if the current context is an emptyCtx, we're done.
+    }
 
+    rf := rs.FieldByName("key")
+    if rf.IsValid() { // if there's a key, it's a valueCtx
+        
+        rf = reflect.NewAt(rf.Type(), unsafe.Pointer(rf.UnsafeAddr())).Elem()
+        if rf.CanInterface() {
+            key := rf.Interface()
+
+            rv := rs.FieldByName("val")
+            rv = reflect.NewAt(rv.Type(), unsafe.Pointer(rv.UnsafeAddr())).Elem()
+            if rv.CanInterface() {
+                val := rv.Interface()
+
+                if _, exists := s.Values[key]; !exists {
+                    s.Values[key] = val
+                    gob.Register(key) // register them for serialization
+                    gob.Register(val)
+                }
+            }
+        }
+    } else {
+         // it's either a cancelCtx or timerCtx, implementation omitted for
+    }
+
+    parent := rs.FieldByName("Context")
+    if parent.IsValid() && !parent.IsNil() {
+        // if there's a parent context, recurse
+        return buildMap(parent.Interface().(context.Context), s)
+    }
+    return s
+}
+```
+<!-- 
+ - lots of reflection and unsafe boilerplate
+ - the gist is to reach in, grab the key/val, ensure we're not shadowing something, and register/save them
+ - recurse upwards -->
