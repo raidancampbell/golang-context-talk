@@ -185,13 +185,11 @@ main.main()
 
 ---
 
-<!-- ## Rebuilding -->
-
 ```
 func main() {
     panicker(context.WithValue(context.Background(), "key", "oops!"))
 }
-// A rather nasty regex for matching the ".(arg1, arg2" part of a stacktrace.
+// A rather nasty regex pattern for matching the ".(arg1, arg2" part of a stacktrace.
 var twoParamPatt = regexp.MustCompile \
 (`^.+[a-zA-Z][a-zA-Z0-9\-_]*\.[a-zA-Z][a-zA-Z0-9\-_]*\((?P<type_itab>0x[0-9a-f]+), (?P<type_data>0x[0-9a-f]+).+`)
 
@@ -228,6 +226,7 @@ func panicker(_ context.Context) {
 ```
 
 <!-- 
+ - rebuilding
  - regex is A rather nasty regex for matching the ".(arg1, arg2" part of a stacktrace.
  - we walk through each line of the stack. the stack is walked from bottom (current execution) to top (creation of groutine)
  - once a match is encountered, parse the memory addresses into a uintptr
@@ -236,3 +235,96 @@ func panicker(_ context.Context) {
  - use type assertion to assert the type of that pointer as a context
  - use the context
 -->
+
+---
+
+```
+func RecoverCtx() (context.Context, error) {
+    return emptyItab(context.Background())
+}
+
+//go:noinline
+func emptyItab(_ context.Context) (context.Context, error) {
+    return valueItab(context.WithValue(context.Background(), "", ""))
+}
+
+//go:noinline
+func valueItab(_ context.Context) (context.Context, error) {
+    ctx, c := context.WithCancel(context.Background())
+    defer c()
+    return cancelItab(ctx)
+}
+
+//go:noinline
+func cancelItab(_ context.Context) (context.Context, error) {
+    ctx, c := context.WithDeadline(context.Background(), time.Now())
+    defer c()
+    return timerItab(ctx)
+}
+
+//go:noinline
+func timerItab(_ context.Context) (context.Context, error) {
+    return doGetCtx()
+}
+
+func doGetCtx() (context.Context, error) {
+    // TODO
+}
+```
+
+<!-- 
+ - the itabs are fixed constructs from compile time
+ - we created a known stack for the first few layers above our implementation
+ 	- when recursing up the stack into the caller's code, we have known references for each implementation's itab
+ - the go:noinline pragma -->
+
+---
+## Inlining
+```
+libraidan/pkg/runsafe.doGetCtx(0x13a1520, 0xc0000a6008, 0xbfae3de322870128, 0xbc60e)
+	/Users/aidan/go/src/libraidan/pkg/runsafe/context.go:59 +0x5b
+libraidan/pkg/runsafe.timerItab(...)
+	/Users/aidan/go/src/libraidan/pkg/runsafe/context.go:52
+libraidan/pkg/runsafe.cancelItab(0x13a14e0, 0xc0000e09c0, 0x0, 0x0, 0x0, 0x0)
+	/Users/aidan/go/src/libraidan/pkg/runsafe/context.go:47 +0x9e
+libraidan/pkg/runsafe.valueItab(0x13a15a0, 0xc00009d320, 0x0, 0x0, 0x0, 0x0)
+	/Users/aidan/go/src/libraidan/pkg/runsafe/context.go:40 +0x82
+libraidan/pkg/runsafe.emptyItab(0x13a1520, 0xc0000a6008, 0xc000040680, 0x100e808, 0x30, 0x130a680)
+	/Users/aidan/go/src/libraidan/pkg/runsafe/context.go:33 +0x7e
+libraidan/pkg/runsafe.RecoverCtx(...)
+```
+
+<!-- 
+ - the compiler "elides" the symbols of an inlined function. 
+ - it's a compiler optimization to remove the overhead of a function call for shorter functions 
+ - the timerItab function was inlined: its implelentation was just a call to another function.
+-->
+
+---
+## Forcing no inline
+```
+libraidan/pkg/runsafe.doGetCtx(0x0, 0x0, 0x0, 0x0)
+	/Users/aidan/go/src/libraidan/pkg/runsafe/context.go:59 +0xbb
+libraidan/pkg/runsafe.timerItab(0x14b5ce0, 0xc0000a44e0, 0x0, 0x0, 0x0, 0x0)
+	/Users/aidan/go/src/libraidan/pkg/runsafe/context.go:52 +0x4c
+libraidan/pkg/runsafe.cancelItab(0x14b5c60, 0xc0000e8c40, 0x0, 0x0, 0x0, 0x0)
+	/Users/aidan/go/src/libraidan/pkg/runsafe/context.go:47 +0x1a5
+libraidan/pkg/runsafe.valueItab(0x14b5d20, 0xc00009d320, 0x0, 0x0, 0x0, 0x0)
+	/Users/aidan/go/src/libraidan/pkg/runsafe/context.go:40 +0x150
+libraidan/pkg/runsafe.emptyItab(0x14b5ca0, 0xc0000a6008, 0x0, 0x0, 0x0, 0x0)
+	/Users/aidan/go/src/libraidan/pkg/runsafe/context.go:33 +0xd7
+libraidan/pkg/runsafe.RecoverCtx(0x0, 0x0, 0x0, 0x0)
+```
+
+---
+## Where are we now?
+ - a `context` will always be the first argument, if present
+ - we can successfully dump a stack and rebuild a context from it
+ - golang natively exposes only 4 implementations of the `Context` interface
+ - We have a fixed stack above our (TODO) implementation, with each of the standard context implementations
+ - We know `itab`s are fixed memory locations determined at compile time
+
+Given the above, the final implementation of context recovery becomes trivial:
+as we move up the callstack, note the `itab` pointer of each implementation.
+Once we pass into our caller's code, look for pointer matches on the first parameter.
+If one is found, take the first two parameters and turn them into a context.
