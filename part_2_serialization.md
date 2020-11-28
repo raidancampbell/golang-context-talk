@@ -45,17 +45,17 @@ Remember, `context.Context` is an interface that has 4 implementations in the st
 ---
 ## Implementation
  1. Receive an incoming context: use reflection to determine the concrete type
- 1. If the type is cancelCtx, remember that we’ll have to create a cancellation function during deserialization
- 1. If the context is timerCtx, reach in and grab the deadline time.
- 	1. when creating a timerCtx, the earliest deadline is always chosen. No need to compare deadlines
+ 1. If the type is `cancelCtx`, remember that we’ll have to create a cancellation function during deserialization
+ 1. If the context is `timerCtx`, reach in and grab the deadline time.
+ 	1. when creating a `timerCtx`, the earliest deadline is always chosen. No need to compare deadlines
  1. Remember the deadline for deserialization
- 1. If the type is valueCtx:
+ 1. If the type is `valueCtx`:
  	1. reach in and grab the key/value `interface`s. Use `gob` to register them, and add them to `map[interface]interface`
  	1. do not overwrite any existing keys
  1. If the context has a parent context, use it to recurse upwards in the context stack
  1. Create our own struct to house the deadline time, cancellation func, and value map. This is what actually gets serialized.
  1. Serialize this struct across the wire using `gob`, and receive it on the other side
- 1. At deserialization, we know we need to create a timerCtx and cancellation function, so we create them
+ 1. At deserialization, we know we need to create a `timerCtx` and cancellation function, so we create them
 
 <!-- 
  - gob can serialize things it has the concrete implementations for (e.g. unexported keys with a primitive type)
