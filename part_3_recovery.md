@@ -22,7 +22,7 @@ func bar() {
     print()
 }
 
-print() {
+func print() {
     fmt.Printf("%d", x)
 }
 ```
@@ -73,11 +73,11 @@ type key struct{}
 var inst key
 
 func Put(id string) context.Context {
-    return recoverContext().WithValue(ctx, inst, id)
+    return RecoverContext().WithValue(ctx, inst, id)
 }
 
 func Get() *log.Logger { // replace with your logging library of choice
-    id := recoverContext().Value(inst)
+    id := RecoverContext().Value(inst)
     if id == "" {
         id = "undefined"
     }
@@ -275,22 +275,22 @@ func doGetCtx() (context.Context, error) {
 <!-- 
  - the itabs are fixed constructs from compile time
  - we created a known stack for the first few layers above our implementation
- 	- when recursing up the stack into the caller's code, we have known references for each implementation's itab
+     - when recursing up the stack into the caller's code, we have known references for each implementation's itab
  - the go:noinline pragma -->
 
 ---
 ## Inlining
 ```
 libraidan/pkg/runsafe.doGetCtx(0x13a1520, 0xc0000a6008, 0xbfae3de322870128, 0xbc60e)
-	/Users/aidan/go/src/libraidan/pkg/runsafe/context.go:59 +0x5b
+    /Users/aidan/go/src/libraidan/pkg/runsafe/context.go:59 +0x5b
 libraidan/pkg/runsafe.timerItab(...)
-	/Users/aidan/go/src/libraidan/pkg/runsafe/context.go:52
+    /Users/aidan/go/src/libraidan/pkg/runsafe/context.go:52
 libraidan/pkg/runsafe.cancelItab(0x13a14e0, 0xc0000e09c0, 0x0, 0x0, 0x0, 0x0)
-	/Users/aidan/go/src/libraidan/pkg/runsafe/context.go:47 +0x9e
+    /Users/aidan/go/src/libraidan/pkg/runsafe/context.go:47 +0x9e
 libraidan/pkg/runsafe.valueItab(0x13a15a0, 0xc00009d320, 0x0, 0x0, 0x0, 0x0)
-	/Users/aidan/go/src/libraidan/pkg/runsafe/context.go:40 +0x82
+    /Users/aidan/go/src/libraidan/pkg/runsafe/context.go:40 +0x82
 libraidan/pkg/runsafe.emptyItab(0x13a1520, 0xc0000a6008, 0xc000040680, 0x100e808, 0x30, 0x130a680)
-	/Users/aidan/go/src/libraidan/pkg/runsafe/context.go:33 +0x7e
+    /Users/aidan/go/src/libraidan/pkg/runsafe/context.go:33 +0x7e
 libraidan/pkg/runsafe.RecoverCtx(...)
 ```
 
@@ -304,15 +304,15 @@ libraidan/pkg/runsafe.RecoverCtx(...)
 ## Forcing no inline
 ```
 libraidan/pkg/runsafe.doGetCtx(0x0, 0x0, 0x0, 0x0)
-	/Users/aidan/go/src/libraidan/pkg/runsafe/context.go:59 +0xbb
+    /Users/aidan/go/src/libraidan/pkg/runsafe/context.go:59 +0xbb
 libraidan/pkg/runsafe.timerItab(0x14b5ce0, 0xc0000a44e0, 0x0, 0x0, 0x0, 0x0)
-	/Users/aidan/go/src/libraidan/pkg/runsafe/context.go:52 +0x4c
+    /Users/aidan/go/src/libraidan/pkg/runsafe/context.go:52 +0x4c
 libraidan/pkg/runsafe.cancelItab(0x14b5c60, 0xc0000e8c40, 0x0, 0x0, 0x0, 0x0)
-	/Users/aidan/go/src/libraidan/pkg/runsafe/context.go:47 +0x1a5
+    /Users/aidan/go/src/libraidan/pkg/runsafe/context.go:47 +0x1a5
 libraidan/pkg/runsafe.valueItab(0x14b5d20, 0xc00009d320, 0x0, 0x0, 0x0, 0x0)
-	/Users/aidan/go/src/libraidan/pkg/runsafe/context.go:40 +0x150
+    /Users/aidan/go/src/libraidan/pkg/runsafe/context.go:40 +0x150
 libraidan/pkg/runsafe.emptyItab(0x14b5ca0, 0xc0000a6008, 0x0, 0x0, 0x0, 0x0)
-	/Users/aidan/go/src/libraidan/pkg/runsafe/context.go:33 +0xd7
+    /Users/aidan/go/src/libraidan/pkg/runsafe/context.go:33 +0xd7
 libraidan/pkg/runsafe.RecoverCtx(0x0, 0x0, 0x0, 0x0)
 ```
 
@@ -328,3 +328,73 @@ Given the above, the final implementation of context recovery becomes trivial:
 as we move up the callstack, note the `itab` pointer of each implementation.
 Once we pass into our caller's code, look for pointer matches on the first parameter.
 If one is found, take the first two parameters and turn them into a context.
+
+---
+```
+    stackMatch++
+
+    // grab the two memory addresses (itab and type value)
+    var p1, p2 uintptr
+    _, err1 := fmt.Sscanf(matches[1], "%v", &p1)
+    _, err2 := fmt.Sscanf(matches[2], "%v", &p2)
+    if err1 != nil || err2 != nil {
+        continue
+    }
+
+    // build up the legal values for each implementation of context
+    // the stackMatch must match the known location in the stack.
+    // Otherwise we might return a malformed context
+    if stackMatch == 1 && strings.Contains(sc.Text(), "timerItab") {
+        deadlineType = p1
+    } else if stackMatch == 2 && strings.Contains(sc.Text(), "cancelItab") {
+        cancelType = p1
+    } else if stackMatch == 3 && strings.Contains(sc.Text(), "valueItab") {
+        valueType = p1
+    } else if stackMatch == 4 && strings.Contains(sc.Text(), "emptyItab") {
+        emptyType = p1
+    } else if p1 != emptyType && p1 != valueType && p1 != cancelType && p1 != deadlineType {
+        // if we're in the caller's code, and the first parameter isn't a 
+        // known context implementation, then skip this stack frame
+        continue
+    }
+
+    if stackMatch <= 4 { // we're still building the legal context implementations
+        continue
+    }
+    // at this point we're done building the legal context implementations, 
+    // and this matched one. rebuild a context from the addresses, and return
+    idata := [2]uintptr{p1, p2}
+    return *(*context.Context)(unsafe.Pointer(&idata)), nil
+```
+
+---
+
+## Presentation source
+```
+█████████████████████████████████████████████	█████████████████████████████████████████████
+█████████████████████████████████████████████	█████████████████████████████████████████████
+████ ▄▄▄▄▄ █▀█ █▄█▀▀▄ ▄▄▀█▀▄█▄▀▀ █ ▄▄▄▄▄ ████	████ ▄▄▄▄▄ █ ▀▀▄▀▀▄▀▀▀▀▀▀▄▀█▄█▀▀▀█ ▄▄▄▄▄ ████
+████ █   █ █▀▀▀█ ▀ ▀ ▀█ █▄ ▄▀▀▄█▄█ █   █ ████	████ █   █ █▄█ ▀█ ▄▀ █▄ ▄▀▄▄▄▀ ▄▄█ █   █ ████
+████ █▄▄▄█ █▀ █▀▀▀▄▀ ▄▄▄▄▀▀▄█ ▀▀ █ █▄▄▄█ ████	████ █▄▄▄█ █▀▀▀▀▄▄▀ █ █  ▄█▀  █▀▀█ █▄▄▄█ ████
+████▄▄▄▄▄▄▄█▄▀ ▀▄█▄█ █▄█ ▀▄▀▄█ █▄█▄▄▄▄▄▄▄████	████▄▄▄▄▄▄▄█ █▄█▄▀ █▄▀ █▄▀ █▄█▄█ █▄▄▄▄▄▄▄████
+████▄▄ ▄▄▀▄▄ ▄▀▄▀  █▀▄▀ ▀▀▄  ▄ ▄▀ █ █ ▀ █████	█████▀▄ ▄█▄█▄▄▄▀ ▀▄▄  █▄███▀█▀█▀█▄▄ █▀▄▄▄████
+████ █▄█▄█▄▄ ▄▄█▀█▀▄▄█▄█▄ ▀█▄▄█▄▀  █▄ ▄▀▄████	████▄█ █▀ ▄ ▄█ ██▀█▄  ▀ ▀█▄▀█▄  ▀█ ▄▄▄█▄▄████
+█████▀▀ ██▄▄ ▄▄█▄ █▄▀ ▀▀▀█▄ ▄▄▄██ ▄▀▄▄ ▀▄████	████▄▄▀▄▄ ▄  ▀▄█▀ ▄▀▀▄█ ▄▄▄▀█ ▄▄▀ ▄▀▄▀ ▄█████
+████▀  ▀▀ ▄▄█▀▄ ▄▄▄  █▄█▀▀▄█▄█▀ ▀▀▄ █▀▄▄ ████	████▀█▀  ▀▄█ ▀█▀▄▄  █ ▀▄ █▀ █▄   ▄█▄█▄█▄ ████
+█████▄▄ ▀▀▄▀██▀▄▀ ▄▄▀ ▀▀ ▀▄ ▄ ▄▄ ▄▄ ▄▄ ▀▄████	████ ▄▀ █▄▄▄▀▀█▀▀  ▄▄█▀▄ ▄▄ ▄  █▀▄▄█▄▀ ▄▄████
+████▄ ██▄█▄▀▄ ▀█▀█ ▄█▄▀█ ▀ ███▀▄▀  █▀█▄▄ ████	████▄▄▄██▀▄█▄ ▀ ▀██▄ ▄ ▀▄▄█ ▄██▄ ▀██▄▄█  ████
+████▄▄▀▀▄█▄ ▀▄▀█▄▄▄▄    ███▀▄▄▄█▀ ▄▀▄▀▄ ▄████	████▄▀█ ▀▄▄▄ ▀▄▄█ ▀▄ ██▀█▄█ █  ███▄ ▄▀▄▀█████
+████▄█▀▀█ ▄▀ █▀ ▄█▄▄ ▄██▀  ▀ █▄  █▄▀█▄▄▄ ████	████ ▀▀ ▄▀▄█▄▀  ▄▄▀ ▄█▄█▄ ▄█▄ ▄▄█  ▀███ ▄████
+████ █ ▀█▄▄██▀ ▄▀▀█▀ ▄█▀ ▀▄▀▄▄▄▄▀▄▄ ▄ ▄ ▄████	████ █▄ ▀▄▄ ▀▀▄▀ █▄ █ ▀▄▀▀▄▄▄█▄█ ▄▄ ▄▀▄▄█████
+████ █ ▀  ▄██▄██▀ ▄▄▄█ ██▀▀█ █▀ ▀▀▄▄▀██▄ ████	████ ██▄█ ▄█ ▀  ▄█▀▄ ▄▀▀█▄█ ▄▄ ▄▀▀▄ █▄▄  ████
+████▄█▄█▄▄▄▄ █ █▄█▄▄▄▄▀  █▄▀█ ▄▄ ▄▄▄ █▄██████	████▄█▄██▄▄█ ▄▀     ▄▀▀█▄ ▄  ▄▄▀ ▄▄▄ ▄▄▀█████
+████ ▄▄▄▄▄ █▄▄  ▄█▀▄ █▄█ ▀ ██▄▄█ █▄█ ▀▄▄ ████	████ ▄▄▄▄▄ ████▄▀▄██▀▀▄  ▄▀█▀▄▄█ █▄█ ▄█  ████
+████ █   █ █ ██▄▀▀▀▀ ▄█▀▀█▄ ▄▄▄    ▄ ▄  ▀████	████ █   █ █ ▄ █▄▄█▄████▄▄▀█▀▄▄▄▄▄ ▄ █▄██████
+████ █▄▄▄█ █ ▀ █▀ ▄ ▀▄ █▀▀▄█▀▄▀▀ ▀█ ▀▄▄▄ ████	████ █▄▄▄█ █▄▀▀██▄▀█  ▄██▀ █▀█▄▀ ▄▀ ████ ████
+████▄▄▄▄▄▄▄█▄▄██▄█▄▄▄▄██▄█▄█▄▄▄██▄█▄█▄▄▄▄████	████▄▄▄▄▄▄▄███▄█▄█▄█▄▄█▄▄███▄▄▄██▄██▄▄▄▄▄████
+█████████████████████████████████████████████	█████████████████████████████████████████████
+█████████████████████████████████████████████	█████████████████████████████████████████████
+                     [1]                                              [2]
+```
+1: https://raw.githubusercontent.com/raidancampbell/golang-context-talk/main/part_3_recovery.md
+2: https://github.com/vinayak-mehta/present
