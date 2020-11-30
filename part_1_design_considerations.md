@@ -64,7 +64,8 @@ The function implementation always requires context, there's a wrapper for when 
 "I want some nice-to-have tracing and metrics in my code"
 
 ```golang
-ctx := context.WithValue(context.Background(), TODO, time.Now())
+type timingContextKey struct{}
+ctx := context.WithValue(context.Background(), timingContextKey, time.Now())
 ```
 <!-- 
  - a parent context's value is never overwritten for a given key, it's shadowed
@@ -122,12 +123,24 @@ Storing a reference to a context opens the door for conflicts with flowing conte
 
 ---
 ## Implementation Patterns
-<!-- TODO:
- - always first
- - any IO should wait on both IO and the context cancellatoin
- - any calls to deadline should immediately defer a cancel
- - value keys are unexported structs
- - always flows -->
+ - most time expensive operations in golang are IO, such as HTTP requests or database queries
+ 	- we can trust that these implementations handle context cancellations correctly
+ 	- for anything else, the below code snippet should work well enough, particularly if it's been a while since the last check
+```
+select {
+default:
+case <-ctx.Done():
+	return nil, ctx.Err()
+}
+```
+ - in idiomatic go a `context` will always be the first argument, if present
+ - to prevent leaks, anytime a context is created with a cancel func, immediately defer the cancel func:
+ ```
+ctx, c := context.WithCancel(context.Background())
+defer c()
+ ```
+ - when using context to store data, the key for the data should always be an unexported struct
+ - context flows and should rarely (if ever) be stored in a variable
 
 ---
 
